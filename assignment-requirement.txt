@@ -1,0 +1,17 @@
+Course Assignment
+• Download monthly returns data (since 2000) for US equities, US 10Yr
+treasury bonds, US REITs and US commodities
+• Use full historical return/covariance assumptions to setup portfolio
+optimization with following objectives (no short constraint):
+Maximize return subject to annualized volatility less than 10%
+Minimize volatility subject to annualized return more than 4%
+Maximize Sharpe Ratio
+• If assuming all assets have the same Sharpe Ratio, what are the
+optimization portfolios with these three objectives? Will the
+optimization results depend on the Sharpe Ratio assumption?
+ Is there any regime change for the risk assumption observed from the
+historical data? If yes, what is the impact on the portfolio
+optimization results?
+• Using the historical data, setup backtesting study for three risk-based
+optimal portfolios (equal weight, min vol, max diversification) for
+comparison and recommendation
