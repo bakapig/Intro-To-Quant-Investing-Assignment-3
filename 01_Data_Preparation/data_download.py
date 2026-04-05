@@ -8,7 +8,7 @@ Asset Classes & Data Sources:
                           R_t ≈ Y_{t-1}/12 - D × (Y_t - Y_{t-1})
                           where D = 8.5 (modified duration)
   - US REITs:          VGSIX  (Vanguard REIT Index Fund, via Yahoo Finance)
-  - US Commodities:    GC=F   (Gold Futures, via Yahoo Finance)
+  - US Commodities:    ^BCOM  (Bloomberg Commodity Index, via Yahoo Finance)
 
 Data range: 2000-01-01 to present (all assets have data from 2000)
 """
@@ -20,15 +20,15 @@ import pandas as pd
 YF_TICKERS = {
     "US_Equities": "SPY",  # S&P 500
     "US_REITs": "VGSIX",  # Vanguard REIT Index Fund (May 1996)
-    "US_Commodities_Gold": "GC=F",  # Gold Futures
+    "US_Commodities": "^BCOM",  # Bloomberg Commodity Index (broad, diversified)
 }
 
 FRED_YIELD_SERIES = "GS10"  # 10-Year Constant Maturity Treasury Yield
-MODIFIED_DURATION = 8.5  # Assumed modified duration for 10-Year Treasury
 
 START_DATE = "1999-12-01"  # Fetch from Dec 1999 so first return = Jan 2000
 END_DATE = None  # None = today
-OUTPUT_CSV = "monthly_returns.csv"
+import os
+OUTPUT_CSV = os.path.join(os.path.dirname(__file__), "..", "Data", "monthly_returns.csv")
 
 
 # ── Download YF prices & compute returns ──────────────────────────────────────
@@ -72,28 +72,23 @@ def download_treasury_returns(
     fred_series: str,
     start: str,
     end: str | None = None,
-    duration: float = 8.5,
 ) -> pd.Series:
     """
-    Download 10-Year Treasury yield from FRED and approximate monthly total
-    returns using the standard fixed-income formula:
+    Download 10-Year Treasury yield from FRED and calculate exact monthly total
+    returns by dynamically computing Macaulay and Modified Duration at each step.
 
-        R_t ≈ Y_{t-1}/12  -  D × (Y_t - Y_{t-1})
+    WHY DYNAMIC DURATION?
+    Instead of using a hardcoded average duration (like D=8.5), we precisely 
+    calculate the Macaulay Duration for a 10-year par bond at the prevailing 
+    market yield every single month. As yields fall, duration mathematically 
+    extends; as yields rise, it contracts. This ensures our price-shock 
+    simulations are 100% mathematically rigorously aligned with the environment.
 
-    Parameters
-    ----------
-    fred_series : str
-        FRED series ID (e.g. 'GS10').
-    start, end : str
-        Date range.
-    duration : float
-        Assumed modified duration (default 8.5 for 10-Year Treasury).
-
-    Returns
-    -------
-    pd.Series
-        Monthly total return series named 'US_10Yr_Bond'.
+    Total Monthly Return:
+        R_t ≈ (Y_{t-1} / 12)  -  D^{mod}_{t-1} × (Y_t - Y_{t-1})
     """
+    import numpy as np
+
     print(f"Downloading FRED series: {fred_series}")
     url = (
         f"https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -109,9 +104,43 @@ def download_treasury_returns(
     yields_monthly = yields_df.resample("ME").last().dropna()
     y = yields_monthly[fred_series] / 100  # Convert percentage to decimal
 
-    # R_t = Y_{t-1}/12 - D * (Y_t - Y_{t-1})
+    # --- DYNAMIC DURATION CALCULATION ---
+    # Assumption: The generic 10-Year Treasury Yield series represents a newly 
+    # issued par bond. For a par bond, Coupon Rate = Yield to Maturity.
+    m = 2  # Semi-annual payments (standard for US Treasuries)
+    periods = 10 * m
+    d_mods = []
+
+    for yield_val in y:
+        if pd.isna(yield_val) or yield_val <= 0:
+            d_mods.append(np.nan)
+            continue
+            
+        y_s = yield_val / m  # Semi-annual yield
+        coupon = (yield_val / m) * 100  # Semi-annual coupon cash flow (assuming 100 par)
+        
+        # Calculate Macaulay Duration numerator: sum of (t * CF_t) / (1+r)^t
+        mac_dur_numerator = 0
+        for i in range(1, periods + 1):
+            t_i = i / m  # Time in years
+            cf = coupon if i < periods else (100 + coupon)  # Principal returned at end
+            mac_dur_numerator += (t_i * cf) / ((1 + y_s)**i)
+            
+        # Since it is a par bond, the Present Value (denominator) is exactly 100
+        mac_duration = mac_dur_numerator / 100.0
+        
+        # Convert to Modified Duration
+        mod_duration = mac_duration / (1 + y_s)
+        d_mods.append(mod_duration)
+        
+    d_mod_series = pd.Series(d_mods, index=y.index)
+
+    # Calculate approximate Total Return:
+    # R_t = (Income from Yield) + (Capital Gain/Loss using dynamic duration)
     y_prev = y.shift(1)
-    returns = y_prev / 12 - duration * (y - y_prev)
+    d_mod_prev = d_mod_series.shift(1)
+    
+    returns = y_prev / 12 - d_mod_prev * (y - y_prev)
     returns = returns.dropna()
     returns.name = "US_10Yr_Bond"
     # Normalize index to month-end for alignment with YF data
@@ -130,14 +159,14 @@ def main():
 
     # 2. Download 10-Year Treasury returns from FRED
     treasury_returns = download_treasury_returns(
-        FRED_YIELD_SERIES, START_DATE, END_DATE, MODIFIED_DURATION
+        FRED_YIELD_SERIES, START_DATE, END_DATE
     )
 
     # 3. Merge all returns into one DataFrame
     monthly_returns = yf_returns.join(treasury_returns, how="inner")
 
     # Reorder columns for clarity
-    col_order = ["US_Equities", "US_10Yr_Bond", "US_REITs", "US_Commodities_Gold"]
+    col_order = ["US_Equities", "US_10Yr_Bond", "US_REITs", "US_Commodities"]
     monthly_returns = monthly_returns[
         [c for c in col_order if c in monthly_returns.columns]
     ]
@@ -164,6 +193,7 @@ def main():
     print(summary.to_string())
 
     # 4. Save to CSV
+    monthly_returns.index.name = "Date"
     monthly_returns.to_csv(OUTPUT_CSV)
     print(f"\nSaved monthly returns to: {OUTPUT_CSV}")
 
@@ -198,8 +228,10 @@ def main():
     print(corr.to_string())
 
     # Save MVO inputs
-    mu_annual.to_csv("expected_returns.csv", header=["Ann_Expected_Return"])
-    cov_annual.to_csv("covariance_matrix.csv")
+    import os
+    out_dir = os.path.join(os.path.dirname(__file__), "..", "Outputs")
+    mu_annual.to_csv(os.path.join(out_dir, "expected_returns.csv"), header=["Ann_Expected_Return"])
+    cov_annual.to_csv(os.path.join(out_dir, "covariance_matrix.csv"))
     print(f"\nSaved: expected_returns.csv, covariance_matrix.csv")
 
     return monthly_returns
