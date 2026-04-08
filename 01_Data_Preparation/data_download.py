@@ -17,11 +17,15 @@ import yfinance as yf
 import pandas as pd
 
 # ── Configuration ──────────────────────────────────────────────────────────────
+USE_VFITX_FOR_BONDS = False  # Set to True to use VFITX (Vanguard Intermediate-Term Treasury) instead of GS10
+
 YF_TICKERS = {
     "US_Equities": "SPY",  # S&P 500
     "US_REITs": "VGSIX",  # Vanguard REIT Index Fund (May 1996)
     "US_Commodities": "^BCOM",  # Bloomberg Commodity Index (broad, diversified)
 }
+if USE_VFITX_FOR_BONDS:
+    YF_TICKERS["US_10Yr_Bond"] = "VFITX"
 
 FRED_YIELD_SERIES = "GS10"  # 10-Year Constant Maturity Treasury Yield
 
@@ -154,16 +158,20 @@ def download_treasury_returns(
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    # 1. Download Yahoo Finance returns (equities, REITs, gold)
+    # 1. Download Yahoo Finance returns (equities, REITs, commodities, and potentially VFITX bonds)
     yf_returns = download_yf_returns(YF_TICKERS, START_DATE, END_DATE)
 
-    # 2. Download 10-Year Treasury returns from FRED
-    treasury_returns = download_treasury_returns(
-        FRED_YIELD_SERIES, START_DATE, END_DATE
-    )
+    if USE_VFITX_FOR_BONDS:
+        monthly_returns = yf_returns
+        monthly_returns.dropna(inplace=True)
+    else:
+        # 2. Download 10-Year Treasury returns from FRED using dynamic duration
+        treasury_returns = download_treasury_returns(
+            FRED_YIELD_SERIES, START_DATE, END_DATE
+        )
 
-    # 3. Merge all returns into one DataFrame
-    monthly_returns = yf_returns.join(treasury_returns, how="inner")
+        # 3. Merge all returns into one DataFrame
+        monthly_returns = yf_returns.join(treasury_returns, how="inner")
 
     # Reorder columns for clarity
     col_order = ["US_Equities", "US_10Yr_Bond", "US_REITs", "US_Commodities"]
